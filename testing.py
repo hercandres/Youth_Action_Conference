@@ -14,6 +14,12 @@ from reportlab.platypus import Table, TableStyle
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+
+
 def build_participants(file_list=None):
 
     participants = {}
@@ -410,8 +416,112 @@ def assignment(participants: dict, speakers: dict, tolerance_percent: int):
 
     return participants, speakers
 
-def generate_school_pdfs(participants, speakers):
 
+
+def generate_session_pdfs(participants, speakers):
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "title",
+        parent=styles["Heading1"],
+        textColor=colors.HexColor("#592C82"),
+        alignment=1,
+        spaceAfter=12
+    )
+
+    normal = styles["Normal"]
+
+    for session in speakers:
+
+        file_name = session + "_Overview.pdf"
+        doc = SimpleDocTemplate(file_name)
+        elements = []
+
+        session_data = speakers[session]
+
+        for title in session_data:
+
+            speaker_info = session_data[title]
+
+            # ---------------- LOGOS ----------------
+            logo_table = Table([
+                [
+                    Image("NU_Logo.png", width=0.9*inch, height=0.9*inch),
+                    Image("Conference_Logo.png", width=1.2*inch, height=1.2*inch),
+                    Image("Ostapenko_logo.png", width=0.9*inch, height=0.9*inch)
+                ]
+            ], colWidths=[2*inch, 2*inch, 2*inch])
+
+            logo_table.setStyle(TableStyle([
+                ("ALIGN", (0,0), (-1,-1), "CENTER")
+            ]))
+
+            elements.append(logo_table)
+            elements.append(Spacer(1, 0.25 * inch))
+
+            # ---------------- TITLE ----------------
+            elements.append(Paragraph("Youth Action Conference 2026", title_style))
+            elements.append(Spacer(1, 0.2 * inch))
+
+            # ---------------- SESSION INFO BOX ----------------
+            info_table = Table([
+                ["Session", session],
+                ["Title", title],
+                ["Speaker", speaker_info["speaker_name"]],
+                ["Category", speaker_info["category"]],
+                ["Room", speaker_info["location"]],
+                ["Target", speaker_info["target"]]
+            ], colWidths=[1.5*inch, 4.5*inch])
+
+            info_table.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#A3C6D4")),
+                ("BACKGROUND", (1,0), (1,-1), colors.whitesmoke),
+                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ]))
+
+            elements.append(info_table)
+            elements.append(Spacer(1, 0.35 * inch))
+
+            # ---------------- STUDENT TABLE ----------------
+            table_data = [["Student Name", "School"]]
+
+            sorted_students = sorted(speaker_info["students"])
+
+            for student_id in sorted_students:
+                name, school = student_id.split(",")
+                table_data.append([name, school])
+
+            if len(table_data) == 1:
+                table_data.append(["No students assigned", "-"])
+
+            table = Table(
+                table_data,
+                colWidths=[3*inch, 2*inch]
+            )
+
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#592C82")),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
+
+                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+
+                ("FONTSIZE", (0,0), (-1,-1), 9),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ]))
+
+            elements.append(table)
+            elements.append(PageBreak())
+
+        doc.build(elements)
+
+    print("Session overview PDFs generated successfully.")
+    
+    
+
+def generate_school_pdfs_option1(participants, speakers):
     time_blocks = [
         "9:45 AM – 10:15 AM",
         "10:20 AM – 10:50 AM",
@@ -421,6 +531,18 @@ def generate_school_pdfs(participants, speakers):
 
     session_names = list(speakers.keys())
 
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "title",
+        parent=styles["Heading1"],
+        textColor=colors.HexColor("#592C82"),
+        alignment=1,
+        spaceAfter=12
+    )
+
+    normal = styles["Normal"]
+
     for school in participants:
 
         file_name = school.replace(" ", "_") + "_Schedules.pdf"
@@ -428,25 +550,50 @@ def generate_school_pdfs(participants, speakers):
 
         elements = []
 
-        styles = getSampleStyleSheet()
-        normal = styles["Normal"]
-        title_style = styles["Heading1"]
-
         for student_name in participants[school]:
 
             student = participants[school][student_name]
 
+            # ---------------- LOGOS ----------------
+            logo_table = Table([
+                [
+                    Image("NU_Logo.png", width=0.9*inch, height=0.9*inch),
+                    Image("Conference_Logo.png", width=1.2*inch, height=1.2*inch),
+                    Image("Ostapenko_logo.png", width=0.9*inch, height=0.9*inch)
+                ]
+            ], colWidths=[2*inch, 2*inch, 2*inch])
+
+            logo_table.setStyle(TableStyle([
+                ("ALIGN", (0,0), (-1,-1), "CENTER")
+            ]))
+
+            elements.append(logo_table)
+            elements.append(Spacer(1, 0.25 * inch))
+
+            # ---------------- TITLE ----------------
             elements.append(Paragraph("Youth Action Conference 2026", title_style))
+
+            # just clean white space instead of divider
             elements.append(Spacer(1, 0.2 * inch))
 
-            elements.append(Paragraph("<b>Student:</b> " + student_name, normal))
-            elements.append(Paragraph("<b>School:</b> " + school, normal))
-            elements.append(Paragraph("<b>Grade:</b> " + student["grade"], normal))
-            elements.append(Spacer(1, 0.3 * inch))
+            # ---------------- STUDENT INFO BOX ----------------
+            info_table = Table([
+                ["Student", student_name],
+                ["School", school],
+                ["Grade", student["grade"]]
+            ], colWidths=[1.5*inch, 4.5*inch])
 
-            table_data = [
-                ["Time", "Session Title", "Room", "Speaker"]
-            ]
+            info_table.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#A3C6D4")),
+                ("BACKGROUND", (1,0), (1,-1), colors.whitesmoke),
+                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ]))
+
+            elements.append(info_table)
+            elements.append(Spacer(1, 0.35 * inch))
+
+            # ---------------- SCHEDULE TABLE ----------------
+            table_data = [["Time", "Session", "Room", "Speaker"]]
 
             for i in range(len(session_names)):
 
@@ -476,9 +623,15 @@ def generate_school_pdfs(participants, speakers):
             )
 
             table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-                ("GRID", (0,0), (-1,-1), 1, colors.black),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE")
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#592C82")),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
+
+                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+
+                ("FONTSIZE", (0,0), (-1,-1), 9),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
             ]))
 
             elements.append(table)
@@ -487,76 +640,7 @@ def generate_school_pdfs(participants, speakers):
         doc.build(elements)
 
     print("PDF files generated successfully.")
-    
 
-def generate_session_pdfs(participants, speakers):
-
-    styles = getSampleStyleSheet()
-    title_style = styles["Heading1"]
-    normal = styles["Normal"]
-
-    for session in speakers:
-
-        file_name = session + "_Overview.pdf"
-        doc = SimpleDocTemplate(file_name)
-        elements = []
-
-        session_data = speakers[session]
-
-        for title in session_data:
-
-            speaker_info = session_data[title]
-
-            # ----------------------------------------
-            # PAGE HEADER
-            # ----------------------------------------
-            elements.append(Paragraph("Youth Action Conference 2026", title_style))
-            elements.append(Spacer(1, 0.2 * inch))
-
-            elements.append(Paragraph("<b>Session:</b> " + session, normal))
-            elements.append(Paragraph("<b>Title:</b> " + title, normal))
-            elements.append(Paragraph("<b>Speaker:</b> " + speaker_info["speaker_name"], normal))
-            elements.append(Paragraph("<b>Category:</b> " + speaker_info["category"], normal))
-            elements.append(Paragraph("<b>Room:</b> " + speaker_info["location"], normal))
-            elements.append(Paragraph("<b>Target:</b> " + speaker_info["target"], normal))
-            elements.append(Spacer(1, 0.3 * inch))
-
-            # ----------------------------------------
-            # STUDENT TABLE
-            # ----------------------------------------
-            table_data = [["Student Name", "School"]]
-
-            # Sort students alphabetically
-            sorted_students = sorted(speaker_info["students"])
-
-            for student_id in sorted_students:
-                name, school = student_id.split(",")
-                table_data.append([name, school])
-
-            if len(table_data) == 1:
-                table_data.append(["No students assigned", "-"])
-
-            table = Table(
-                table_data,
-                colWidths=[3*inch, 2*inch]
-            )
-
-            table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-                ("GRID", (0,0), (-1,-1), 1, colors.black),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-            ]))
-
-            elements.append(table)
-
-            # New page for next title
-            elements.append(PageBreak())
-
-        doc.build(elements)
-
-    print("Session overview PDFs generated successfully.")
-    
-    
 
 
 participants = build_participants()
@@ -564,5 +648,6 @@ speakers = build_speakers()
 
 participants, speakers = assignment(participants, speakers, 30)
 analyze_fairness(participants , speakers)
-generate_school_pdfs(participants, speakers)
+
 generate_session_pdfs(participants, speakers)
+generate_school_pdfs_option1(participants, speakers)
