@@ -644,258 +644,234 @@ def generate_school_pdfs_option1(participants, speakers):
 
 def generate_name_tag_pdfs(participants, speakers):
 
-    from reportlab.platypus import (
-        SimpleDocTemplate, Table, TableStyle,
-        Paragraph, Spacer, Image, PageBreak
-    )
+    from reportlab.pdfgen import canvas as canvas_module
+    from reportlab.platypus import Table, TableStyle, Paragraph
     from reportlab.lib import colors
+    from reportlab.lib.colors import HexColor
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib.pagesizes import LETTER
 
     styles = getSampleStyleSheet()
 
-    # --- Tag dimensions ---
-    TAG_W       = 3.0 * inch   # cell width  (2 per row  → 6 in total)
-    TAG_H       = 3.2 * inch   # cell height (3 per col  → 9.6 in → fits letter with small margins)
-    INNER_W     = 2.6 * inch   # inner content width (TAG_W minus padding)
-    PAGE_MARGIN = 0.15 * inch
+    # ── Brand colors ───────────────────────────────────────────────────────────
+    PURPLE       = HexColor("#592C82")
+    PURPLE_LIGHT = HexColor("#EFE0FF")
+    PURPLE_PALE  = HexColor("#F7F0FF")
+    WHITE        = colors.white
+    DARK_GRAY    = HexColor("#2E2E2E")
 
-    time_blocks = [
-        "9:45–10:15",
-        "10:20–10:50",
-        "10:55–11:25",
-        "11:30–12:00",
+    # ── Avery 5392 grid (extracted from template PDF) ─────────────────────────
+    # Cell size: 288 × 216 pt (4.0" × 3.0"), 2 cols × 3 rows
+    # Grid origin: left 18 pt, top 72 pt
+    PAGE_W, PAGE_H = LETTER          # 612 × 792 pt
+    CELL_W = 288.0                   # full grid cell width
+    CELL_H = 216.0                   # full grid cell height
+
+    # Each badge is drawn INSET by GAP inside its cell, giving a visible gap
+    # between adjacent badges without moving off the Avery grid.
+    GAP = 4.0                        # points inset on every side (≈ 1.4 mm)
+    TAG_W = CELL_W - GAP * 2        # actual drawn badge width
+    TAG_H = CELL_H - GAP * 2        # actual drawn badge height
+
+    # Cell bottom-left corners in ReportLab coordinates (origin = page bottom-left)
+    COL_X = [18.0, 306.0]           # left edge of each cell column
+    ROW_Y = [                        # bottom edge of each cell row
+        PAGE_H - 72.0  - CELL_H,    # row 0 → 504 pt
+        PAGE_H - 288.0 - CELL_H,    # row 1 → 288 pt
+        PAGE_H - 504.0 - CELL_H,    # row 2 →  72 pt
     ]
 
+    # ── Badge zone heights (relative to TAG_H) ────────────────────────────────
+    HEADER_H = 60.0
+    FOOTER_H = 20.0
+    BODY_H   = TAG_H - HEADER_H - FOOTER_H
+
+    time_blocks   = ["9:45–10:15", "10:20–10:50", "10:55–11:25", "11:30–12:00"]
     session_names = list(speakers.keys())
 
-    # ------------------------------------------------------------------ helpers
-    def _front_tag(student_name, school):
-        """Return one front name-tag Table for a given student."""
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FRONT BADGE
+    # ══════════════════════════════════════════════════════════════════════════
+    def _draw_front(c, cell_x, cell_y, student_name, school):
+        # Offset badge inside its cell by GAP on all sides
+        x = cell_x + GAP
+        y = cell_y + GAP
+        W, H = TAG_W, TAG_H
         display_name = student_name.replace("_", " ")
 
-        logos = Table([[
-            Image("NU_Logo.png",         width=0.70 * inch, height=0.70 * inch),
-            Image("Conference_Logo.png", width=0.85 * inch, height=0.85 * inch),
-        ]], colWidths=[1.2 * inch, 1.2 * inch])
-        logos.setStyle(TableStyle([
-            ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ]))
+        # ── Background zones ───────────────────────────────────────────────
+        c.setFillColor(PURPLE)
+        c.rect(x, y + BODY_H + FOOTER_H, W, HEADER_H, stroke=0, fill=1)  # header
+        c.rect(x, y, W, FOOTER_H,                      stroke=0, fill=1)  # footer
 
-        name_style = ParagraphStyle(
-            "name_front",
-            parent=styles["Heading1"],
-            alignment=1,
-            textColor=colors.HexColor("#592C82"),
-            fontSize=18,
-            leading=22,
-            spaceAfter=0,
-        )
-        school_style = ParagraphStyle(
-            "school_front",
-            parent=styles["Normal"],
-            alignment=1,
-            fontSize=11,
-            leading=14,
-            spaceAfter=0,
-        )
-        footer_style = ParagraphStyle(
-            "footer_front",
-            parent=styles["Normal"],
-            alignment=1,
-            fontSize=8,
-            leading=10,
-            textColor=colors.grey,
-        )
+        c.setFillColor(PURPLE_PALE)
+        c.rect(x, y + FOOTER_H, W, BODY_H, stroke=0, fill=1)             # body
 
-        # Row heights sum to TAG_H minus top+bottom outer padding (8pt each = 16pt = 0.222in)
-        # TAG_H=3.2in → inner=2.978in=214pt distributed across 7 rows
-        tag = Table([
-            [logos],                                              # row 0 – logos
-            [Spacer(1, 1)],                                       # row 1 – gap
-            [Paragraph("<b>%s</b>" % display_name, name_style)], # row 2 – name
-            [Spacer(1, 1)],                                       # row 3 – gap
-            [Paragraph(school, school_style)],                    # row 4 – school
-            [Spacer(1, 1)],                                       # row 5 – gap
-            [Paragraph("Youth Action Conference 2026", footer_style)],  # row 6 – footer
-        ],
-        colWidths=[INNER_W],
-        rowHeights=[
-            0.95 * inch,   # logos
-            0.30 * inch,   # gap
-            0.38 * inch,   # name
-            0.22 * inch,   # gap
-            0.28 * inch,   # school
-            0.58 * inch,   # gap  ← absorbs remaining space
-            0.18 * inch,   # footer
-        ])
+        # Lavender accent strip behind name
+        strip_h = BODY_H * 0.44
+        strip_y = y + FOOTER_H + BODY_H * 0.32
+        c.setFillColor(PURPLE_LIGHT)
+        c.rect(x + 1, strip_y, W - 2, strip_h, stroke=0, fill=1)
 
-        tag.setStyle(TableStyle([
-            ("BOX",          (0, 0), (-1, -1), 1.5, colors.HexColor("#592C82")),
-            ("BACKGROUND",   (0, 0), (-1, -1), colors.whitesmoke),
-            ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING",  (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-            ("TOPPADDING",   (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
-        ]))
-        return tag
+        # ── Border ────────────────────────────────────────────────────────
+        c.setStrokeColor(PURPLE)
+        c.setLineWidth(1.5)
+        c.rect(x, y, W, H, stroke=1, fill=0)
 
-    def _back_tag(student_name, school, student):
-        """Return one back name-tag Table showing the student's schedule."""
+        # ── Logos centered in header ───────────────────────────────────────
+        LOGO_H = 48.0
+        NU_W   = LOGO_H
+        CF_W   = LOGO_H * 1.10
+        GAP_L  = 12.0
+        total_logo_w = NU_W + GAP_L + CF_W
+        lx = x + (W - total_logo_w) / 2
+        ly = y + H - HEADER_H + (HEADER_H - LOGO_H) / 2
+        c.drawImage("NU_Logo.png",         lx,              ly,
+                    width=NU_W, height=LOGO_H, mask='auto')
+        c.drawImage("Conference_Logo.png", lx + NU_W + GAP_L, ly,
+                    width=CF_W, height=LOGO_H, mask='auto')
+
+        # ── Name ──────────────────────────────────────────────────────────
+        name_fs = 20
+        while c.stringWidth(display_name, "Helvetica-Bold", name_fs) > W - 28 and name_fs > 12:
+            name_fs -= 1
+        c.setFillColor(PURPLE)
+        c.setFont("Helvetica-Bold", name_fs)
+        c.drawCentredString(x + W / 2, y + FOOTER_H + BODY_H * 0.54, display_name)
+
+        # ── Divider ───────────────────────────────────────────────────────
+        c.setStrokeColor(PURPLE)
+        c.setLineWidth(0.75)
+        c.line(x + 32, y + FOOTER_H + BODY_H * 0.40,
+               x + W - 32, y + FOOTER_H + BODY_H * 0.40)
+
+        # ── School ────────────────────────────────────────────────────────
+        c.setFillColor(DARK_GRAY)
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(x + W / 2, y + FOOTER_H + BODY_H * 0.21, school)
+
+        # ── Footer text ───────────────────────────────────────────────────
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(x + W / 2, y + 6, "Youth Action Conference 2026")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  BACK BADGE
+    # ══════════════════════════════════════════════════════════════════════════
+    def _draw_back(c, cell_x, cell_y, student_name, school, student):
+        x = cell_x + GAP
+        y = cell_y + GAP
+        W, H = TAG_W, TAG_H
         display_name = student_name.replace("_", " ")
 
-        name_style = ParagraphStyle(
-            "name_back",
-            parent=styles["Normal"],
-            alignment=1,
-            fontSize=12,
-            leading=15,
-            textColor=colors.HexColor("#592C82"),
-            spaceAfter=6,
-        )
+        # ── Background zones ───────────────────────────────────────────────
+        c.setFillColor(PURPLE)
+        c.rect(x, y + BODY_H + FOOTER_H, W, HEADER_H, stroke=0, fill=1)
+        c.rect(x, y, W, FOOTER_H,                      stroke=0, fill=1)
+        c.setFillColor(WHITE)
+        c.rect(x, y + FOOTER_H, W, BODY_H, stroke=0, fill=1)
 
-        # Wrap-friendly style for session cell
-        cell_style = ParagraphStyle(
-            "cell",
-            parent=styles["Normal"],
-            fontSize=7.5,
-            leading=9,
-            alignment=1,
-        )
-        header_style = ParagraphStyle(
-            "header",
-            parent=styles["Normal"],
-            fontSize=7.5,
-            leading=9,
-            alignment=1,
-            textColor=colors.white,
-        )
+        c.setStrokeColor(PURPLE)
+        c.setLineWidth(1.5)
+        c.rect(x, y, W, H, stroke=1, fill=0)
+
+        # ── Name + school in header ────────────────────────────────────────
+        name_fs = 14
+        while c.stringWidth(display_name, "Helvetica-Bold", name_fs) > W - 20 and name_fs > 9:
+            name_fs -= 1
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", name_fs)
+        c.drawCentredString(x + W / 2, y + H - HEADER_H + HEADER_H * 0.55, display_name)
+
+        c.setFillColor(HexColor("#D9B8F5"))
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(x + W / 2, y + H - HEADER_H + HEADER_H * 0.28, school)
+
+        # ── Schedule table ─────────────────────────────────────────────────
+        cell_style = ParagraphStyle("cb", parent=styles["Normal"],
+            fontSize=7, leading=9, alignment=1)
+        header_style = ParagraphStyle("hb", parent=styles["Normal"],
+            fontSize=7, leading=9, alignment=1, textColor=WHITE)
 
         schedule_data = [[
             Paragraph("<b>Time</b>",    header_style),
             Paragraph("<b>Session</b>", header_style),
             Paragraph("<b>Room</b>",    header_style),
         ]]
-
         for j, session in enumerate(session_names):
             assigned_title = student[session]
             if assigned_title == "vendors":
-                session_display = "Vendors"
-                room = "Grand Foyer"
+                session_display, room = "Vendors", "Grand Foyer"
             else:
-                session_info    = speakers[session][assigned_title]
+                info            = speakers[session][assigned_title]
                 session_display = assigned_title
-                room            = session_info["location"]
-
+                room            = info["location"]
             schedule_data.append([
                 Paragraph(time_blocks[j],   cell_style),
                 Paragraph(session_display,  cell_style),
                 Paragraph(room,             cell_style),
             ])
 
-        schedule_table = Table(
-            schedule_data,
-            # 0.68 + 1.10 + 0.65 = 2.43 in ≤ INNER_W(2.6) - side padding(0.167) = 2.43 in
-            colWidths=[0.68 * inch, 1.10 * inch, 0.65 * inch],
-        )
-        schedule_table.setStyle(TableStyle([
-            ("BACKGROUND",   (0, 0), (-1,  0), colors.HexColor("#592C82")),
-            ("TEXTCOLOR",    (0, 0), (-1,  0), colors.white),
-            ("GRID",         (0, 0), (-1, -1), 0.4, colors.grey),
-            ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING",   (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
+        sched = Table(schedule_data,
+            colWidths=[0.85 * inch, 1.45 * inch, 0.85 * inch])
+        sched.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1,  0), PURPLE),
+            ("TEXTCOLOR",     (0, 0), (-1,  0), WHITE),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, HexColor("#F7F0FF")]),
+            ("GRID",          (0, 0), (-1, -1), 0.4, HexColor("#C4A8E0")),
+            ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
 
-        # rowHeights sum to TAG_H(3.2in) minus outer padding(6pt×2=0.167in) = ~3.03in
-        back_tag = Table([
-            [Spacer(1, 1)],
-            [Paragraph("<b>%s</b>" % display_name, name_style)],
-            [Spacer(1, 1)],
-            [schedule_table],
-            [Spacer(1, 1)],
-        ],
-        colWidths=[INNER_W],
-        rowHeights=[
-            0.28 * inch,   # top gap
-            0.28 * inch,   # name
-            0.18 * inch,   # gap
-            2.08 * inch,   # schedule table (5 rows × ~0.416in each)
-            0.20 * inch,   # bottom gap
-        ])
+        tbl_w, tbl_h = sched.wrapOn(c, W - 12, BODY_H - 8)
+        tbl_x = x + (W - tbl_w) / 2
+        tbl_y = y + FOOTER_H + (BODY_H - tbl_h) / 2
+        sched.drawOn(c, tbl_x, tbl_y)
 
-        back_tag.setStyle(TableStyle([
-            ("BOX",          (0, 0), (-1, -1), 1.5, colors.HexColor("#592C82")),
-            ("BACKGROUND",   (0, 0), (-1, -1), colors.white),
-            ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING",  (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING",   (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 6),
-        ]))
-        return back_tag
+        # ── Footer text ───────────────────────────────────────────────────
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(x + W / 2, y + 6, "Youth Action Conference 2026")
 
-    def _page_table(tags, mirror_cols=False):
-        """
-        Arrange up to 6 tags in a 2-column × 3-row grid.
-        mirror_cols=True reverses each row's column order so that
-        the back page aligns with the front when the sheet is flipped
-        over the vertical (left-right) axis.
-        """
-        while len(tags) < 6:
-            tags.append(Spacer(1, TAG_H))
+    # ══════════════════════════════════════════════════════════════════════════
+    #  SHEET LAYOUT — Avery 5392 grid with inset badges
+    # ══════════════════════════════════════════════════════════════════════════
+    def _draw_sheet(c, draw_fn, items, mirror_cols=False):
+        for idx, item in enumerate(items[:6]):
+            row = idx // 2
+            col = idx %  2
+            if mirror_cols:
+                col = 1 - col
+            draw_fn(c, COL_X[col], ROW_Y[row], *item)
 
-        rows = []
-        for r in range(3):
-            left, right = tags[r * 2], tags[r * 2 + 1]
-            rows.append([right, left] if mirror_cols else [left, right])
-
-        tbl = Table(rows, colWidths=[TAG_W, TAG_W], rowHeights=[TAG_H] * 3)
-        tbl.setStyle(TableStyle([
-            ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("GRID",   (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
-        return tbl
-
-    # ------------------------------------------------------------------ main
+    # ══════════════════════════════════════════════════════════════════════════
+    #  MAIN LOOP
+    # ══════════════════════════════════════════════════════════════════════════
     for school in participants:
         file_name = school.replace(" ", "_") + "_NameTags.pdf"
-        doc = SimpleDocTemplate(
-            file_name,
-            pagesize=LETTER,
-            leftMargin=PAGE_MARGIN,
-            rightMargin=PAGE_MARGIN,
-            topMargin=PAGE_MARGIN,
-            bottomMargin=PAGE_MARGIN,
-        )
-
-        elements = []
+        c = canvas_module.Canvas(file_name, pagesize=LETTER)
         students = list(participants[school].keys())
 
         for i in range(0, len(students), 6):
             chunk = students[i : i + 6]
 
-            # --- front page ---
-            front_tags = [_front_tag(name, school) for name in chunk]
-            elements.append(_page_table(front_tags, mirror_cols=False))
-            elements.append(PageBreak())
+            # Front page
+            front_items = [(name, school) for name in chunk]
+            _draw_sheet(c, _draw_front, front_items, mirror_cols=False)
+            c.showPage()
 
-            # --- back page (columns mirrored so tags align when flipped) ---
-            back_tags = [
-                _back_tag(name, school, participants[school][name])
+            # Back page (cols mirrored for duplex alignment)
+            back_items = [
+                (name, school, participants[school][name])
                 for name in chunk
             ]
-            elements.append(_page_table(back_tags, mirror_cols=True))
-            elements.append(PageBreak())
+            _draw_sheet(c, _draw_back, back_items, mirror_cols=True)
+            c.showPage()
 
-        doc.build(elements)
+        c.save()
 
     print("Name tag PDFs generated successfully.")
 
