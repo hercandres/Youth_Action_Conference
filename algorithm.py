@@ -6,6 +6,7 @@ Created on Thu Feb 19 20:06:33 2026
 """
 
 import random
+import os
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -20,7 +21,24 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 
+
+# Helper: returns True if the grade string is middle school
+# Accepts both "7 or 8" and the CSV value "6 to 8"
+def is_middle(grade):
+    return grade in ("7 or 8", "6 to 8")
+
+# Helper: returns True if the grade string is high school
+def is_high(grade):
+    return grade in ("9 or 10", "11 or 12")
+
+
 def build_participants(file_list):
+    """
+    Reads every school CSV using Python's csv module so that quoted fields
+    containing commas (e.g. email addresses with embedded newlines, titles
+    with commas) are parsed correctly.
+    """
+    import csv
 
     participants = {}
 
@@ -28,112 +46,154 @@ def build_participants(file_list):
 
     for file_name in file_list:
 
-        file = open(file_name, "r")
+        with open(file_name, "r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
 
-        lines = file.readlines()
+            rows = list(reader)
 
-        # Skip first two rows
-        for line in lines[2:]:
+        # Skip first two header/instruction rows
+        for row in rows[2:]:
 
-            line = line.strip()
+            # Pad short rows so index access is always safe
+            while len(row) < 8:
+                row.append("")
 
-            if line == "":
+            if row[0].strip() == "":
                 continue
 
-            data = line.split(";")
+            # Strip every field
+            school = row[0].strip()
+            role   = row[1].strip()
+            name   = row[2].strip()
+            email  = row[3].strip().replace("\n", "").replace("\r", "")
+            grade  = row[4].strip()
+            pref1  = row[5].strip()
+            pref2  = row[6].strip()
+            pref3  = row[7].strip()
+            empty  = "Not Assigned"
 
-            # Skip rows that are just ;;;;;;;
-            if len(data) < 8 or data[0] == "":
-                continue
+            # Normalize single-number grades → range strings
+            if grade in ("9", "10"):
+                grade = "9 or 10"
+            elif grade in ("11", "12"):
+                grade = "11 or 12"
 
-            school = data[0]
-            role = data[1]
-            name = data[2]
-            email = data[3]
-            grade = data[4]
-            pref1 = data[5]
-            pref2 = data[6]
-            pref3 = data[7]
-            empty = "Not Assigned"
-
-            # STUDENTS
-            if role == "Student":
+            # STUDENTS (case-insensitive)
+            if role.lower() == "student":
 
                 if school not in participants:
                     participants[school] = {}
 
                 participants[school][name] = {
-                    "grade": grade,
-                    "email": email,
+                    "grade":        grade,
+                    "email":        email,
                     "preference_1": pref1,
                     "preference_2": pref2,
                     "preference_3": pref3,
-                    "session_1": empty,
-                    "session_2": empty,
-                    "session_3": empty,
-                    "session_4": empty,
-                    "vendor": "No",
-                    "preferred":"No"
+                    "Session 1":    empty,
+                    "Session 2":    empty,
+                    "Session 3":    empty,
+                    "Session 4":    empty,
+                    "vendor":       "No",
+                    "preferred":    "No"
                 }
 
-            # CHAPERONES
-            elif role == "Chaperone":
-
+            # CHAPERONES (case-insensitive)
+            elif role.lower() == "chaperone":
                 chaperone_file.write(school + "," + name + "\n")
 
-        file.close()
-    
     chaperone_file.close()
     return participants
 
 
 def build_speakers(file_name):
+    """
+    Builds the speakers dict from the CSV.
+
+    FIX: If a title already exists in a session, a numeric suffix is appended
+    (e.g. "Exclusion Workshop", "Exclusion Workshop_2", "Exclusion Workshop_3")
+    so that no talk silently overwrites another.  The original title string is
+    stored under the key "base_title" so the PDFs can still display the clean name.
+    """
+
+    # Pre-initialize all 4 sessions so the assignment loop never hits a KeyError
+    # even if a session has no talks listed in the speakers CSV.
+    ALL_SESSIONS = ["Session 1", "Session 2", "Session 3", "Session 4"]
 
     speakers = {}
-
-    file = open(file_name, "r")
-
-    lines = file.readlines()
-
-    # Skip first two rows
-    for line in lines[2:]:
-
-        line = line.strip()
-
-        if line == "":
-            continue
-
-        data = line.split(",")
-
-        # Skip rows that are just ;;;;;;;
-        if len(data) < 7 or data[0] == "":
-            continue
-
-        title = data[0]
-        category = data[1]
-        name = data[2]
-        session = data[3]
-        place = data[4]
-        target = data[5]
-
-
-        if session not in speakers:
-            speakers[session] = {}
-            speakers[session]["vendors"] = {
-            "speaker_name":"vendors",
-            "category":"N/A",
-            "location":"PENDING",
-            "target": "Everyone",
-            "students" : []}
-
-        speakers[session][title] = {
-            "speaker_name":name,
-            "category":category,
-            "location":place,
-            "target":target,
-            "students" : []
+    for s in ALL_SESSIONS:
+        speakers[s] = {
+            "vendors": {
+                "base_title":   "vendors",
+                "speaker_name": "vendors",
+                "category":     "N/A",
+                "location":     "PENDING",
+                "target":       "Everyone",
+                "students":     []
             }
-            
+        }
+
+    # Try the filename as-is first, then with a .csv extension
+    if not os.path.exists(file_name) and os.path.exists(file_name + ".csv"):
+        file_name = file_name + ".csv"
+
+    # Use csv.reader so quoted fields with commas parse correctly
+    import csv
+
+    with open(file_name, "r", newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    # Skip first two header/instruction rows
+    for row in rows[2:]:
+
+        while len(row) < 6:
+            row.append("")
+
+        if row[0].strip() == "":
+            continue
+
+        # Strip every field
+        title    = row[0].strip()
+        category = row[1].strip()
+        name     = row[2].strip()
+        session  = row[3].strip()
+        place    = row[4].strip()
+        target   = row[5].strip()
+
+        # Normalize session name: "session_1" -> "Session 1" etc.
+        session = session.replace("session_", "Session ").replace("Session_", "Session ")
+        # Handle edge case like "session1" with no underscore
+        for n in ("1","2","3","4"):
+            if session.lower().replace(" ","") == "session" + n:
+                session = "Session " + n
+
+        # Skip the "Vendors" row — already pre-initialized as "vendors"
+        if title.lower() == "vendors":
+            continue
+
+        # Skip rows whose session name is not one of the 4 expected sessions
+        if session not in speakers:
+            print(f"WARNING: Unrecognised session '{session}' for talk '{title}' — skipped.")
+            continue
+
+        # Make the key unique if this title already exists in this session
+        unique_title = title
+        suffix = 2
+        while unique_title in speakers[session]:
+            unique_title = f"{title}_{suffix}"
+            suffix += 1
+        # ───────────────────────────────────────────────────────────────────
+
+        speakers[session][unique_title] = {
+            "base_title":   title,          # original readable name for PDFs
+            "speaker_name": name,
+            "category":     category,
+            "location":     place,
+            "target":       target,
+            "students":     []
+        }
+
     return speakers
 
 
@@ -141,122 +201,230 @@ def assignment(participants: dict, speakers: dict, tolerance_percent: int):
 
     tolerance = tolerance_percent / 100
 
-    # Collect all students
+    # ⚠️  Must exactly match the school name as it appears in your CSV.
+    BUFFALO_SCHOOL = "Buffalo Public School.csv"
+
+    session_names = ["Session 1", "Session 2", "Session 3", "Session 4"]
+
     all_students = []
     for school in participants:
         for name in participants[school]:
             all_students.append((school, name))
 
-    session_names = list(speakers.keys())
+    # ---------------------------------------------------
+    # FIX: Build a "seen categories" tracker so that no
+    # student ever attends two talks in the same category
+    # (e.g. two "Mental Health" workshops across sessions).
+    # ---------------------------------------------------
+    seen_categories = {
+        name + "||" + school: set()
+        for school in participants
+        for name in participants[school]
+    }
 
     # ---------------------------------------------------
-    # STEP 1 — EVEN VENDOR DISTRIBUTION (HIGH SCHOOL ONLY)
+    # STEP 0 — LOCK BUFFALO INTO SESSION 4 EVENT CENTER
     # ---------------------------------------------------
-    high_school_students = [
-        (school, name)
-        for school, name in all_students
-        if participants[school][name]["grade"] != "6 to 8"
-    ]
+    for school, name in all_students:
 
-    random.shuffle(high_school_students)
+        if school == BUFFALO_SCHOOL:
 
-    for i, (school, name) in enumerate(high_school_students):
-        session = session_names[i % len(session_names)]
-        participants[school][name][session] = "vendors"
-        speakers[session]["vendors"]["students"].append(name + "," + school)
+            student = participants[school][name]
+            student["Session 4"] = "Event Center"
+
+            speakers["Session 4"]["Event Center"]["students"].append(
+                name + "||" + school
+            )
 
     # ---------------------------------------------------
-    # STEP 2 — SESSION ASSIGNMENTS
+    # VENDOR SETUP
+    # ---------------------------------------------------
+    vendor_counts = {s: 0 for s in session_names}
+    buffalo_vendor_seen = {}
+
+    for school, name in all_students:
+        if school == BUFFALO_SCHOOL:
+            buffalo_vendor_seen[name + "||" + school] = False
+
+    random.shuffle(all_students)
+
+    # ---------------------------------------------------
+    # STEP 1 — VENDORS (SESSIONS 1–3 ONLY)
+    # ---------------------------------------------------
+    for school, name in all_students:
+
+        student = participants[school][name]
+        student_id = name + "||" + school
+
+        for session in ["Session 1", "Session 2", "Session 3"]:
+
+            if student[session] != "Not Assigned":
+                continue
+
+            # ---------------- BUFFALO (RANDOMIZED) ----------------
+            if school == BUFFALO_SCHOOL:
+
+                if (not buffalo_vendor_seen[student_id]
+                        and random.random() < 0.30):
+
+                    student[session] = "vendors"
+                    speakers[session]["vendors"]["students"].append(student_id)
+                    vendor_counts[session] += 1
+
+                    buffalo_vendor_seen[student_id] = True
+
+                continue
+
+            # ---------------- OTHER SCHOOLS ----------------
+            # Break after assigning so the student only gets ONE vendor slot
+            if random.random() < 0.15:
+                student[session] = "vendors"
+                speakers[session]["vendors"]["students"].append(student_id)
+                vendor_counts[session] += 1
+                break
+
+    # ---------------------------------------------------
+    # GUARANTEE: EVERY STUDENT HAS ≥1 VENDOR VISIT
+    #
+    # Buffalo students  → must land in Sessions 1–3
+    #   (Session 4 is locked to Buffalo Elections)
+    # All other students → Sessions 1–4 are all eligible
+    # ---------------------------------------------------
+    for school, name in all_students:
+
+        student_id = name + "||" + school
+        student    = participants[school][name]
+
+        if school == BUFFALO_SCHOOL:
+            # Buffalo: check sessions 1-3 only
+            eligible_sessions = ["Session 1", "Session 2", "Session 3"]
+        else:
+            # Everyone else: any session is fine
+            eligible_sessions = ["Session 1", "Session 2", "Session 3", "Session 4"]
+
+        has_vendor = any(student[s] == "vendors" for s in eligible_sessions)
+
+        if not has_vendor:
+            # Pick the session among eligible ones that is still unassigned,
+            # preferring to avoid displacing an already-assigned workshop slot.
+            unassigned = [s for s in eligible_sessions if student[s] == "Not Assigned"]
+            pool = unassigned if unassigned else eligible_sessions
+            chosen = random.choice(pool)
+
+            # If this slot already had a workshop assigned, remove it from
+            # that workshop's student list before overwriting.
+            prev = student[chosen]
+            if prev not in ("Not Assigned", "vendors"):
+                prev_list = speakers[chosen][prev]["students"]
+                if student_id in prev_list:
+                    prev_list.remove(student_id)
+
+            student[chosen] = "vendors"
+            speakers[chosen]["vendors"]["students"].append(student_id)
+
+    # ---------------------------------------------------
+    # STEP 2 — NORMAL ASSIGNMENT (ALL SESSIONS)
     # ---------------------------------------------------
     for session in session_names:
 
         session_data = speakers[session]
 
-        # Identify 6–8 title (if exists)
+        # ---------------- MIDDLE SCHOOL TITLE ----------------
         middle_title = None
         for title in session_data:
-            if session_data[title]["target"] == "6 to 8":
+            if session_data[title].get("target") in ("7 or 8", "6 to 8"):
                 middle_title = title
                 break
 
-        # Titles eligible for balancing (high school only)
+        # ---------------- HIGH SCHOOL TITLES ----------------
+        # "Event Center" excluded — only Buffalo goes there.
         high_titles = [
             t for t in session_data
             if t != "vendors"
-            and session_data[t]["target"] != "6 to 8"
+            and t != "Event Center"
+            and session_data[t].get("target") == "9 to 12"
         ]
 
         random.shuffle(all_students)
 
         for school, name in all_students:
 
-            student = participants[school][name]
+            student    = participants[school][name]
+            student_id = name + "||" + school
 
-            # Skip already assigned (vendors from Step 1)
+            # Already assigned (covers Buffalo in Session 4 and any vendor slots)
             if student[session] != "Not Assigned":
                 continue
 
-            # ---------------------------------------------------
-            # 6–8 STUDENTS
-            # ---------------------------------------------------
-            if student["grade"] == "6 to 8":
+            # ---------------- MIDDLE SCHOOL ----------------
+            if is_middle(student["grade"]):
 
-                # If session has 6–8 title → assign there
-                if middle_title is not None:
+                if middle_title:
                     student[session] = middle_title
-                    session_data[middle_title]["students"].append(name + "," + school)
-
-                # If no 6–8 title → send to vendors
+                    session_data[middle_title]["students"].append(student_id)
                 else:
+                    # No middle-school talk this session → send to vendors
                     student[session] = "vendors"
-                    session_data["vendors"]["students"].append(name + "," + school)
+                    session_data["vendors"]["students"].append(student_id)
 
                 continue
 
-            # ---------------------------------------------------
-            # HIGH SCHOOL STUDENTS (9–12)
-            # ---------------------------------------------------
-            titles_received = [
-                student[s] for s in session_names
-                if student[s] != "Not Assigned"
-            ]
+            # ---------------- HIGH SCHOOL ----------------
+            if not is_high(student["grade"]):
+                continue
 
             assigned = False
 
-            # Try preference match first
             for title in high_titles:
-
-                if title in titles_received:
-                    continue
 
                 category = session_data[title]["category"]
 
-                if category in (
-                    student["preference_1"],
-                    student["preference_2"],
-                    student["preference_3"],
-                ):
+                # FIX: only match if the student hasn't already attended
+                # a talk in this category in a previous session.
+                if (category in (
+                        student["preference_1"],
+                        student["preference_2"],
+                        student["preference_3"])
+                        and category not in seen_categories[student_id]):
+
                     student[session] = title
-                    session_data[title]["students"].append(name + "," + school)
-                    student["_pref_assigned_" + session] = True
+                    session_data[title]["students"].append(student_id)
+                    seen_categories[student_id].add(category)   # mark seen
                     assigned = True
                     break
 
-            # If no preference match → smallest group
-            if not assigned:
+            if not assigned and high_titles:
 
-                smallest_title = min(
-                    high_titles,
-                    key=lambda t: len(session_data[t]["students"])
-                )
+                # Fall back to least-populated talk, still respecting
+                # the "no repeat category" rule where possible.
+                eligible = [
+                    t for t in high_titles
+                    if session_data[t]["category"] not in seen_categories[student_id]
+                ]
 
-                student[session] = smallest_title
-                session_data[smallest_title]["students"].append(name + "," + school)
-                student["_pref_assigned_" + session] = False
+                pool = eligible if eligible else high_titles
 
-        # ---------------------------------------------------
-        # STEP 3 — REBALANCING (HIGH SCHOOL ONLY)
-        # ---------------------------------------------------
+                smallest = min(pool, key=lambda t: len(session_data[t]["students"]))
+
+                student[session] = smallest
+                session_data[smallest]["students"].append(student_id)
+                seen_categories[student_id].add(session_data[smallest]["category"])
+
+    # ---------------------------------------------------
+    # STEP 3 — REBALANCING
+    # "Event Center" excluded — Buffalo stays locked.
+    # ---------------------------------------------------
+    for session in session_names:
+
+        session_data = speakers[session]
+
+        high_titles = [
+            t for t in session_data
+            if t != "vendors"
+            and t != "Event Center"
+            and session_data[t].get("target") == "9 to 12"
+        ]
+
         while True:
 
             counts = {
@@ -267,42 +435,31 @@ def assignment(participants: dict, speakers: dict, tolerance_percent: int):
             if not counts:
                 break
 
-            max_title = max(counts, key=counts.get)
-            min_title = min(counts, key=counts.get)
+            max_t = max(counts, key=counts.get)
+            min_t = min(counts, key=counts.get)
 
-            max_size = counts[max_title]
-            min_size = counts[min_title]
-
-            if max_size <= min_size * (1 + tolerance):
+            if counts[max_t] <= counts[min_t] * (1 + tolerance):
                 break
 
             moved = False
 
-            for student_id in session_data[max_title]["students"]:
+            for student_id in session_data[max_t]["students"]:
 
-                name, school = student_id.split(",")
+                name, school = student_id.split("||", 1)
                 student = participants[school][name]
 
-                if not student.get("_pref_assigned_" + session, False):
+                session_data[max_t]["students"].remove(student_id)
+                session_data[min_t]["students"].append(student_id)
 
-                    session_data[max_title]["students"].remove(student_id)
-                    session_data[min_title]["students"].append(student_id)
-                    student[session] = min_title
-                    moved = True
-                    break
+                student[session] = min_t
+                moved = True
+                break
 
             if not moved:
-
-                student_id = session_data[max_title]["students"][-1]
-
-                name, school = student_id.split(",")
-                student = participants[school][name]
-
-                session_data[max_title]["students"].remove(student_id)
-                session_data[min_title]["students"].append(student_id)
-                student[session] = min_title
+                break
 
     return participants, speakers
+
 
 def generate_session_pdfs(participants, speakers):
 
@@ -330,17 +487,20 @@ def generate_session_pdfs(participants, speakers):
 
             speaker_info = session_data[title]
 
+            # Use the original readable name for display
+            display_title = speaker_info.get("base_title", title)
+
             # ---------------- LOGOS ----------------
             logo_table = Table([
                 [
-                    Image("NU_Logo.png", width=0.9*inch, height=0.9*inch),
-                    Image("Conference_Logo.png", width=1.2*inch, height=1.2*inch),
-                    Image("Ostapenko_logo.png", width=0.9*inch, height=0.9*inch)
+                    Image("NU_Logo.png",         width=0.9 * inch, height=0.9 * inch),
+                    Image("Conference_Logo.png",  width=1.2 * inch, height=1.2 * inch),
+                    Image("Ostapenko_logo.png",   width=0.9 * inch, height=0.9 * inch)
                 ]
-            ], colWidths=[2*inch, 2*inch, 2*inch])
+            ], colWidths=[2 * inch, 2 * inch, 2 * inch])
 
             logo_table.setStyle(TableStyle([
-                ("ALIGN", (0,0), (-1,-1), "CENTER")
+                ("ALIGN", (0, 0), (-1, -1), "CENTER")
             ]))
 
             elements.append(logo_table)
@@ -352,18 +512,18 @@ def generate_session_pdfs(participants, speakers):
 
             # ---------------- SESSION INFO BOX ----------------
             info_table = Table([
-                ["Session", session],
-                ["Title", title],
-                ["Speaker", speaker_info["speaker_name"]],
+                ["Session",  session],
+                ["Title",    display_title],
+                ["Speaker",  speaker_info["speaker_name"]],
                 ["Category", speaker_info["category"]],
-                ["Room", speaker_info["location"]],
-                ["Target", speaker_info["target"]]
-            ], colWidths=[1.5*inch, 4.5*inch])
+                ["Room",     speaker_info["location"]],
+                ["Target",   speaker_info["target"]]
+            ], colWidths=[1.5 * inch, 4.5 * inch])
 
             info_table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#A3C6D4")),
-                ("BACKGROUND", (1,0), (1,-1), colors.whitesmoke),
-                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#A3C6D4")),
+                ("BACKGROUND", (1, 0), (1, -1), colors.whitesmoke),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ]))
 
             elements.append(info_table)
@@ -375,7 +535,7 @@ def generate_session_pdfs(participants, speakers):
             sorted_students = sorted(speaker_info["students"])
 
             for student_id in sorted_students:
-                name, school = student_id.split(",")
+                name, school = student_id.split("||", 1)
                 table_data.append([name, school])
 
             if len(table_data) == 1:
@@ -383,19 +543,16 @@ def generate_session_pdfs(participants, speakers):
 
             table = Table(
                 table_data,
-                colWidths=[3*inch, 2*inch]
+                colWidths=[3 * inch, 2 * inch]
             )
 
             table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#592C82")),
-                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-
-                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
-
-                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-
-                ("FONTSIZE", (0,0), (-1,-1), 9),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("BACKGROUND",     (0, 0), (-1,  0), colors.HexColor("#592C82")),
+                ("TEXTCOLOR",      (0, 0), (-1,  0), colors.white),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+                ("GRID",           (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTSIZE",       (0, 0), (-1, -1), 9),
+                ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
             ]))
 
             elements.append(table)
@@ -404,8 +561,7 @@ def generate_session_pdfs(participants, speakers):
         doc.build(elements)
 
     print("Session overview PDFs generated successfully.")
-    
-    
+
 
 def generate_school_pdfs_option1(participants, speakers):
     time_blocks = [
@@ -443,14 +599,14 @@ def generate_school_pdfs_option1(participants, speakers):
             # ---------------- LOGOS ----------------
             logo_table = Table([
                 [
-                    Image("NU_Logo.png", width=0.9*inch, height=0.9*inch),
-                    Image("Conference_Logo.png", width=1.2*inch, height=1.2*inch),
-                    Image("Ostapenko_logo.png", width=0.9*inch, height=0.9*inch)
+                    Image("NU_Logo.png",         width=0.9 * inch, height=0.9 * inch),
+                    Image("Conference_Logo.png",  width=1.2 * inch, height=1.2 * inch),
+                    Image("Ostapenko_logo.png",   width=0.9 * inch, height=0.9 * inch)
                 ]
-            ], colWidths=[2*inch, 2*inch, 2*inch])
+            ], colWidths=[2 * inch, 2 * inch, 2 * inch])
 
             logo_table.setStyle(TableStyle([
-                ("ALIGN", (0,0), (-1,-1), "CENTER")
+                ("ALIGN", (0, 0), (-1, -1), "CENTER")
             ]))
 
             elements.append(logo_table)
@@ -459,65 +615,86 @@ def generate_school_pdfs_option1(participants, speakers):
             # ---------------- TITLE ----------------
             elements.append(Paragraph("Youth Action Conference 2026", title_style))
 
-            # just clean white space instead of divider
             elements.append(Spacer(1, 0.2 * inch))
 
             # ---------------- STUDENT INFO BOX ----------------
             info_table = Table([
                 ["Student", student_name],
-                ["School", school],
-                ["Grade", student["grade"]]
-            ], colWidths=[1.5*inch, 4.5*inch])
+                ["School",  school],
+                ["Grade",   student["grade"]]
+            ], colWidths=[1.5 * inch, 4.5 * inch])
 
             info_table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#A3C6D4")),
-                ("BACKGROUND", (1,0), (1,-1), colors.whitesmoke),
-                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#A3C6D4")),
+                ("BACKGROUND", (1, 0), (1, -1), colors.whitesmoke),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ]))
 
             elements.append(info_table)
             elements.append(Spacer(1, 0.35 * inch))
 
             # ---------------- SCHEDULE TABLE ----------------
-            table_data = [["Time", "Session", "Room", "Speaker"]]
+            # Use Paragraph for all cells so long titles wrap cleanly
+            cell_style = ParagraphStyle(
+                "sched_cell",
+                parent=styles["Normal"],
+                fontSize=9,
+                leading=11,
+            )
+            header_style = ParagraphStyle(
+                "sched_header",
+                parent=styles["Normal"],
+                fontSize=9,
+                leading=11,
+                textColor=colors.white,
+                fontName="Helvetica-Bold",
+            )
+
+            table_data = [[
+                Paragraph("Time",    header_style),
+                Paragraph("Session", header_style),
+                Paragraph("Room",    header_style),
+                Paragraph("Speaker", header_style),
+            ]]
 
             for i in range(len(session_names)):
 
-                session = session_names[i]
+                session        = session_names[i]
                 assigned_title = student[session]
 
-                if assigned_title == "vendors":
-                    title = "Vendor Exploration"
-                    room = "Grand Foyer"
+                if assigned_title == "Not Assigned":
+                    title        = "Not Assigned"
+                    room         = "-"
+                    speaker_name = "-"
+                elif assigned_title == "vendors":
+                    title        = "Vendor Exploration"
+                    room         = "Grand Foyer"
                     speaker_name = "Vendors"
                 else:
                     session_info = speakers[session][assigned_title]
-                    title = assigned_title
-                    room = session_info["location"]
+                    title        = session_info.get("base_title", assigned_title)
+                    room         = session_info["location"]
                     speaker_name = session_info["speaker_name"]
 
                 table_data.append([
-                    time_blocks[i],
-                    title,
-                    room,
-                    speaker_name
+                    Paragraph(time_blocks[i], cell_style),
+                    Paragraph(title,          cell_style),
+                    Paragraph(room,           cell_style),
+                    Paragraph(speaker_name,   cell_style),
                 ])
 
             table = Table(
                 table_data,
-                colWidths=[1.5*inch, 2.5*inch, 1.2*inch, 1.5*inch]
+                colWidths=[1.5 * inch, 2.5 * inch, 1.2 * inch, 1.5 * inch]
             )
 
             table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#592C82")),
-                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-
-                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
-
-                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-
-                ("FONTSIZE", (0,0), (-1,-1), 9),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("BACKGROUND",    (0, 0), (-1,  0), colors.HexColor("#592C82")),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+                ("GRID",          (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING",    (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             ]))
 
             elements.append(table)
@@ -526,6 +703,7 @@ def generate_school_pdfs_option1(participants, speakers):
         doc.build(elements)
 
     print("PDF files generated successfully.")
+
 
 def generate_name_tag_pdfs(participants, speakers):
 
@@ -539,145 +717,106 @@ def generate_name_tag_pdfs(participants, speakers):
 
     styles = getSampleStyleSheet()
 
-    # ── Brand colors ───────────────────────────────────────────────────────────
+    # ── Brand colors ──────────────────────────────────────────────────────────
     PURPLE       = HexColor("#592C82")
     PURPLE_LIGHT = HexColor("#EFE0FF")
     PURPLE_PALE  = HexColor("#F7F0FF")
     WHITE        = colors.white
     DARK_GRAY    = HexColor("#2E2E2E")
 
-    # ── Avery 5392 grid (extracted from template PDF) ─────────────────────────
-    # Cell size: 288 × 216 pt (4.0" × 3.0"), 2 cols × 3 rows
-    # Grid origin: left 18 pt, top 72 pt
-    PAGE_W, PAGE_H = LETTER          # 612 × 792 pt
-    CELL_W = 288.0                   # full grid cell width
-    CELL_H = 216.0                   # full grid cell height
+    # ── Badge dimensions: 4.25" wide × 6" tall  (VERTICAL / PORTRAIT) ────────
+    PAGE_W, PAGE_H = LETTER           # 612 × 792 pt
+    TAG_W = 4.25 * 72                 # 306 pt
+    TAG_H = 6.00 * 72                 # 432 pt
 
-    # Each badge is drawn INSET by GAP inside its cell, giving a visible gap
-    # between adjacent badges without moving off the Avery grid.
-    GAP = 4.0                        # points inset on every side (≈ 1.4 mm)
-    TAG_W = CELL_W - GAP * 2        # actual drawn badge width
-    TAG_H = CELL_H - GAP * 2        # actual drawn badge height
+    # ── 2-up layout: side by side, top of badge exactly 1.5" from page top ─
+    MARGIN_X = (PAGE_W - 2 * TAG_W) / 2
+    MARGIN_Y = PAGE_H - (1.5 * 72) - TAG_H   # PDF y=0 is at the bottom
 
-    # Cell bottom-left corners in ReportLab coordinates (origin = page bottom-left)
-    COL_X = [18.0, 306.0]           # left edge of each cell column
-    ROW_Y = [                        # bottom edge of each cell row
-        PAGE_H - 72.0  - CELL_H,    # row 0 → 504 pt
-        PAGE_H - 288.0 - CELL_H,    # row 1 → 288 pt
-        PAGE_H - 504.0 - CELL_H,    # row 2 →  72 pt
+    BADGE_SLOTS = [
+        (MARGIN_X,           MARGIN_Y),
+        (MARGIN_X + TAG_W,   MARGIN_Y),
     ]
 
-    # ── Badge zone heights (relative to TAG_H) ────────────────────────────────
-    HEADER_H = 60.0
-    FOOTER_H = 20.0
+    ONE_PER_PAGE = (2 * TAG_W > PAGE_W) or (TAG_H > PAGE_H)
+
+    # ── Section heights inside each badge ─────────────────────────────────────
+    HEADER_H = 64.0
+    FOOTER_H = 18.0
     BODY_H   = TAG_H - HEADER_H - FOOTER_H
 
+    # ── Conference data ────────────────────────────────────────────────────────
     time_blocks   = ["9:45–10:15", "10:20–10:50", "10:55–11:25", "11:30–12:00"]
     session_names = list(speakers.keys())
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  FRONT BADGE
+    #  COMBINED BADGE  (identity + schedule, single side)
     # ══════════════════════════════════════════════════════════════════════════
-    def _draw_front(c, cell_x, cell_y, student_name, school):
-        # Offset badge inside its cell by GAP on all sides
-        x = cell_x + GAP
-        y = cell_y + GAP
-        W, H = TAG_W, TAG_H
+    def _draw_badge(c, bx, by, student_name, school, student):
+        x, y  = bx, by
+        W, H  = TAG_W, TAG_H
         display_name = student_name.replace("_", " ")
 
-        # ── Background zones ───────────────────────────────────────────────
-        c.setFillColor(PURPLE)
-        c.rect(x, y + BODY_H + FOOTER_H, W, HEADER_H, stroke=0, fill=1)  # header
-        c.rect(x, y, W, FOOTER_H,                      stroke=0, fill=1)  # footer
-
-        c.setFillColor(PURPLE_PALE)
-        c.rect(x, y + FOOTER_H, W, BODY_H, stroke=0, fill=1)             # body
-
-        # Lavender accent strip behind name
-        strip_h = BODY_H * 0.44
-        strip_y = y + FOOTER_H + BODY_H * 0.32
-        c.setFillColor(PURPLE_LIGHT)
-        c.rect(x + 1, strip_y, W - 2, strip_h, stroke=0, fill=1)
-
-        # ── Border ────────────────────────────────────────────────────────
-        c.setStrokeColor(PURPLE)
-        c.setLineWidth(1.5)
-        c.rect(x, y, W, H, stroke=1, fill=0)
-
-        # ── Logos centered in header ───────────────────────────────────────
-        LOGO_H = 48.0
-        NU_W   = LOGO_H
-        CF_W   = LOGO_H * 1.10
-        GAP_L  = 12.0
-        total_logo_w = NU_W + GAP_L + CF_W
-        lx = x + (W - total_logo_w) / 2
-        ly = y + H - HEADER_H + (HEADER_H - LOGO_H) / 2
-        c.drawImage("NU_Logo.png",         lx,              ly,
-                    width=NU_W, height=LOGO_H, mask='auto')
-        c.drawImage("Conference_Logo.png", lx + NU_W + GAP_L, ly,
-                    width=CF_W, height=LOGO_H, mask='auto')
-
-        # ── Name ──────────────────────────────────────────────────────────
-        name_fs = 20
-        while c.stringWidth(display_name, "Helvetica-Bold", name_fs) > W - 28 and name_fs > 12:
-            name_fs -= 1
-        c.setFillColor(PURPLE)
-        c.setFont("Helvetica-Bold", name_fs)
-        c.drawCentredString(x + W / 2, y + FOOTER_H + BODY_H * 0.54, display_name)
-
-        # ── Divider ───────────────────────────────────────────────────────
-        c.setStrokeColor(PURPLE)
-        c.setLineWidth(0.75)
-        c.line(x + 32, y + FOOTER_H + BODY_H * 0.40,
-               x + W - 32, y + FOOTER_H + BODY_H * 0.40)
-
-        # ── School ────────────────────────────────────────────────────────
-        c.setFillColor(DARK_GRAY)
-        c.setFont("Helvetica", 10)
-        c.drawCentredString(x + W / 2, y + FOOTER_H + BODY_H * 0.21, school)
-
-        # ── Footer text ───────────────────────────────────────────────────
-        c.setFillColor(WHITE)
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(x + W / 2, y + 6, "Youth Action Conference 2026")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    #  BACK BADGE
-    # ══════════════════════════════════════════════════════════════════════════
-    def _draw_back(c, cell_x, cell_y, student_name, school, student):
-        x = cell_x + GAP
-        y = cell_y + GAP
-        W, H = TAG_W, TAG_H
-        display_name = student_name.replace("_", " ")
-
-        # ── Background zones ───────────────────────────────────────────────
+        # ── Background regions ─────────────────────────────────────────────
         c.setFillColor(PURPLE)
         c.rect(x, y + BODY_H + FOOTER_H, W, HEADER_H, stroke=0, fill=1)
-        c.rect(x, y, W, FOOTER_H,                      stroke=0, fill=1)
-        c.setFillColor(WHITE)
+        c.rect(x, y,                      W, FOOTER_H, stroke=0, fill=1)
+
+        c.setFillColor(PURPLE_PALE)
         c.rect(x, y + FOOTER_H, W, BODY_H, stroke=0, fill=1)
+
+        STRIP_H = BODY_H * 0.30
+        STRIP_Y = y + FOOTER_H + BODY_H * 0.66
+        c.setFillColor(PURPLE_LIGHT)
+        c.rect(x + 1, STRIP_Y, W - 2, STRIP_H, stroke=0, fill=1)
 
         c.setStrokeColor(PURPLE)
         c.setLineWidth(1.5)
         c.rect(x, y, W, H, stroke=1, fill=0)
 
-        # ── Name + school in header ────────────────────────────────────────
-        name_fs = 14
-        while c.stringWidth(display_name, "Helvetica-Bold", name_fs) > W - 20 and name_fs > 9:
-            name_fs -= 1
-        c.setFillColor(WHITE)
-        c.setFont("Helvetica-Bold", name_fs)
-        c.drawCentredString(x + W / 2, y + H - HEADER_H + HEADER_H * 0.55, display_name)
+        # ── Logo pair (header) ─────────────────────────────────────────────
+        LOGO_H   = 50.0
+        NU_W     = LOGO_H
+        CF_W     = LOGO_H * 1.10
+        GAP_L    = 14.0
+        total_lw = NU_W + GAP_L + CF_W
+        lx = x + (W - total_lw) / 2
+        ly = y + H - HEADER_H + (HEADER_H - LOGO_H) / 2
 
-        c.setFillColor(HexColor("#D9B8F5"))
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(x + W / 2, y + H - HEADER_H + HEADER_H * 0.28, school)
+        c.drawImage("NU_Logo.png",          lx,                ly,
+                    width=NU_W,  height=LOGO_H, mask='auto')
+        c.drawImage("Conference_Logo.png",  lx + NU_W + GAP_L, ly,
+                    width=CF_W,  height=LOGO_H, mask='auto')
+
+        # ── Name ──────────────────────────────────────────────────────────
+        name_fs = 24
+        while (c.stringWidth(display_name, "Helvetica-Bold", name_fs) > W - 24
+               and name_fs > 11):
+            name_fs -= 1
+        c.setFillColor(PURPLE)
+        c.setFont("Helvetica-Bold", name_fs)
+        name_y = STRIP_Y + STRIP_H * 0.55 - name_fs * 0.18
+        c.drawCentredString(x + W / 2, name_y, display_name)
+
+        # ── Separator + school ─────────────────────────────────────────────
+        sep_y = STRIP_Y + STRIP_H * 0.20
+        c.setStrokeColor(PURPLE)
+        c.setLineWidth(0.75)
+        c.line(x + 28, sep_y, x + W - 28, sep_y)
+
+        school_y = y + FOOTER_H + BODY_H * 0.60
+        c.setFillColor(DARK_GRAY)
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(x + W / 2, school_y, school)
 
         # ── Schedule table ─────────────────────────────────────────────────
+        TABLE_AREA_H = BODY_H * 0.56
+        TABLE_AREA_Y = y + FOOTER_H + 4
+
         cell_style = ParagraphStyle("cb", parent=styles["Normal"],
-            fontSize=7, leading=9, alignment=1)
+            fontSize=8, leading=10, alignment=1)
         header_style = ParagraphStyle("hb", parent=styles["Normal"],
-            fontSize=7, leading=9, alignment=1, textColor=WHITE)
+            fontSize=8, leading=10, alignment=1, textColor=WHITE)
 
         schedule_data = [[
             Paragraph("<b>Time</b>",    header_style),
@@ -686,11 +825,14 @@ def generate_name_tag_pdfs(participants, speakers):
         ]]
         for j, session in enumerate(session_names):
             assigned_title = student[session]
-            if assigned_title == "vendors":
+            if assigned_title == "Not Assigned":
+                session_display, room = "Not Assigned", "–"
+            elif assigned_title == "vendors":
                 session_display, room = "Vendors", "Grand Foyer"
             else:
                 info            = speakers[session][assigned_title]
-                session_display = assigned_title
+                # Use the original readable name on the badge
+                session_display = info.get("base_title", assigned_title)
                 room            = info["location"]
             schedule_data.append([
                 Paragraph(time_blocks[j],   cell_style),
@@ -699,38 +841,27 @@ def generate_name_tag_pdfs(participants, speakers):
             ])
 
         sched = Table(schedule_data,
-            colWidths=[0.85 * inch, 1.45 * inch, 0.85 * inch])
+            colWidths=[0.95 * inch, 1.75 * inch, 1.00 * inch])
         sched.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1,  0), PURPLE),
-            ("TEXTCOLOR",     (0, 0), (-1,  0), WHITE),
-            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, HexColor("#F7F0FF")]),
-            ("GRID",          (0, 0), (-1, -1), 0.4, HexColor("#C4A8E0")),
-            ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING",    (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("BACKGROUND",     (0, 0), (-1,  0), PURPLE),
+            ("TEXTCOLOR",      (0, 0), (-1,  0), WHITE),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, HexColor("#F7F0FF")]),
+            ("GRID",           (0, 0), (-1, -1), 0.4, HexColor("#C4A8E0")),
+            ("ALIGN",          (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",     (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
         ]))
 
-        tbl_w, tbl_h = sched.wrapOn(c, W - 12, BODY_H - 8)
+        tbl_w, tbl_h = sched.wrapOn(c, W - 20, TABLE_AREA_H)
         tbl_x = x + (W - tbl_w) / 2
-        tbl_y = y + FOOTER_H + (BODY_H - tbl_h) / 2
+        tbl_y = TABLE_AREA_Y + (TABLE_AREA_H - tbl_h) / 2
         sched.drawOn(c, tbl_x, tbl_y)
 
-        # ── Footer text ───────────────────────────────────────────────────
+        # ── Footer text ────────────────────────────────────────────────────
         c.setFillColor(WHITE)
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(x + W / 2, y + 6, "Youth Action Conference 2026")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    #  SHEET LAYOUT — Avery 5392 grid with inset badges
-    # ══════════════════════════════════════════════════════════════════════════
-    def _draw_sheet(c, draw_fn, items, mirror_cols=False):
-        for idx, item in enumerate(items[:6]):
-            row = idx // 2
-            col = idx %  2
-            if mirror_cols:
-                col = 1 - col
-            draw_fn(c, COL_X[col], ROW_Y[row], *item)
+        c.setFont("Helvetica", 7)
+        c.drawCentredString(x + W / 2, y + 5, "Youth Action Conference 2026")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  MAIN LOOP
@@ -740,25 +871,24 @@ def generate_name_tag_pdfs(participants, speakers):
         c = canvas_module.Canvas(file_name, pagesize=LETTER)
         students = list(participants[school].keys())
 
-        for i in range(0, len(students), 6):
-            chunk = students[i : i + 6]
-
-            # Front page
-            front_items = [(name, school) for name in chunk]
-            _draw_sheet(c, _draw_front, front_items, mirror_cols=False)
-            c.showPage()
-
-            # Back page (cols mirrored for duplex alignment)
-            back_items = [
-                (name, school, participants[school][name])
-                for name in chunk
-            ]
-            _draw_sheet(c, _draw_back, back_items, mirror_cols=True)
-            c.showPage()
+        if ONE_PER_PAGE:
+            cx = (PAGE_W - TAG_W) / 2
+            cy = (PAGE_H - TAG_H) / 2
+            for name in students:
+                _draw_badge(c, cx, cy, name, school, participants[school][name])
+                c.showPage()
+        else:
+            for i in range(0, len(students), 2):
+                chunk = students[i : i + 2]
+                for slot_idx, name in enumerate(chunk):
+                    bx, by = BADGE_SLOTS[slot_idx]
+                    _draw_badge(c, bx, by, name, school, participants[school][name])
+                c.showPage()
 
         c.save()
 
     print("Name tag PDFs generated successfully.")
+
 
 def analyze_fairness(participants, speakers):
 
@@ -778,27 +908,35 @@ def analyze_fairness(participants, speakers):
         for title in speakers[session]:
 
             count = len(speakers[session][title]["students"])
-            print(title, ":", count)
+            display_title = speakers[session][title].get("base_title", title)
+            print(display_title, ":", count)
 
             if title == "vendors":
                 continue
 
             counts.append(count)
 
-            if speakers[session][title]["target"] == "6 to 8":
+            if speakers[session][title].get("target") in ("7 or 8", "6 to 8"):
                 middle_counts.append(count)
 
             for student_id in speakers[session][title]["students"]:
 
-                name, school = student_id.split(",")
+                name, school = student_id.split("||", 1)
                 student = participants[school][name]
 
-                # High school only
-                if student["grade"] != "6 to 8":
+                assigned_title = student.get(session, "Not Assigned")
+
+                if assigned_title == "Not Assigned":
+                    continue
+
+                if assigned_title not in speakers[session]:
+                    continue
+
+                if is_high(student["grade"]):
 
                     total_high += 1
 
-                    category = speakers[session][title]["category"]
+                    category = speakers[session][assigned_title].get("category")
 
                     if category in (
                         student["preference_1"],
@@ -807,7 +945,6 @@ def analyze_fairness(participants, speakers):
                     ):
                         preference_matches += 1
 
-        # Talk distribution statistics
         if counts:
             print("Talk Min:", min(counts))
             print("Talk Max:", max(counts))
@@ -819,7 +956,7 @@ def analyze_fairness(participants, speakers):
             print("High School Preference Satisfaction:", percent, "%")
 
         if middle_counts:
-            print("6–8 Title Size:", middle_counts[0])
+            print("7–8 Title Size:", middle_counts[0])
 
     # ======================================================
     # OVERALL DAY PREFERENCE SUMMARY (HIGH SCHOOL ONLY)
@@ -833,15 +970,15 @@ def analyze_fairness(participants, speakers):
 
     for school in participants:
         for name in participants[school]:
-            if participants[school][name]["grade"] != "6 to 8":
+            if is_high(participants[school][name]["grade"]):
                 high_school_students.append((school, name))
 
     total_students = len(high_school_students)
 
     three = 0
-    two = 0
-    one = 0
-    zero = 0
+    two   = 0
+    one   = 0
+    zero  = 0
 
     for school, name in high_school_students:
 
@@ -850,12 +987,18 @@ def analyze_fairness(participants, speakers):
 
         for session in speakers:
 
-            assigned_title = student[session]
+            assigned_title = student.get(session, "Not Assigned")
+
+            if assigned_title == "Not Assigned":
+                continue
+
+            if assigned_title not in speakers[session]:
+                continue
 
             if assigned_title == "vendors":
                 continue
 
-            category = speakers[session][assigned_title]["category"]
+            category = speakers[session][assigned_title].get("category")
 
             if category in (
                 student["preference_1"],
@@ -886,29 +1029,34 @@ def analyze_fairness(participants, speakers):
 
         print("0 Preference Assignments:",
               round((zero / total_students) * 100, 2), "%")
-                        
-
-
 
 
 def init():
-    
-    """Make sure they use ;"""
-    file_list = ["School_Registration_Test1.csv"]
-    
-    """Make sure this use , """
-    speaker_file = "Speakers.csv"
-    
+
+    # ⚠️  Files must use commas (,) as delimiters
+    file_list = [
+        
+    ]
+
+    # ⚠️  This file must use commas (,) as delimiters
+    speaker_file = "Workshop Presenters"
+
+    # ⚠️  These three image files must be in the same directory as this script
+    required_images = ["NU_Logo.png", "Conference_Logo.png", "Ostapenko_logo.png"]
+    for img in required_images:
+        if not os.path.exists(img):
+            print(f"WARNING: Missing image file '{img}' — PDFs will fail to build.")
+
     participants = build_participants(file_list)
-    speakers = build_speakers(speaker_file)
-    
+    speakers     = build_speakers(speaker_file)
+
     participants, speakers = assignment(participants, speakers, 20)
-    analyze_fairness(participants , speakers)
-    
+    analyze_fairness(participants, speakers)
+
     generate_session_pdfs(participants, speakers)
     generate_school_pdfs_option1(participants, speakers)
     generate_name_tag_pdfs(participants, speakers)
-    
+
     return None
 
 
